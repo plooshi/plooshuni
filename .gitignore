@@ -1,0 +1,4 @@
+x64/
+EOR
+*.vcxproj.user
+.vs
