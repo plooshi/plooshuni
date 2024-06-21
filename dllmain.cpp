@@ -171,7 +171,7 @@ float GetMaxTickRate() {
 void* (*DispatchRequestOG)(void* unknown_1, void* MCPData, int MCPCode);
 void* DispatchRequest(void* unknown_1, void* MCPData, int MCPCode)
 {
-	if (FNVer < 7.40) *(int*)(__int64(MCPData) + (FNVer < 4.2 ? 0x60 : 0x28)) = 3;
+	if (FNVer < 8.01) *(int*)(__int64(MCPData) + (FNVer < 4.2 ? 0x60 : 0x28)) = 3;
 	return DispatchRequestOG(unknown_1, MCPData, 3);
 }
 
