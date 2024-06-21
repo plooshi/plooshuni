@@ -23,6 +23,7 @@
 #include <functional>
 #include <iostream>
 #include <array>
+#include <map>
 #pragma comment(lib, "Dbghelp.lib")
 #include "memcury.h"
 using namespace std;

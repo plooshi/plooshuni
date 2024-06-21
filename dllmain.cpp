@@ -10,88 +10,35 @@ bool ReadyToStartMatch(UObject* GM) {
 
 	if (!bSetPlaylist) {
 		bSetPlaylist = true;
-		GM->Get<uint32>("WarmupRequiredPlayerCount") = 4;
+		GameMode->Get<"WarmupRequiredPlayerCount", uint32>() = 4;
 
 		auto Playlist = (UObject *) TUObjectArray::FindObject("Playlist_DefaultSolo");
 
 		if (FNVer >= 6.10) {
-			auto CurrentPlaylistInfo = GameState->GetPtr<FFastArraySerializer>("CurrentPlaylistInfo");
+			auto CurrentPlaylistInfo = GameState->GetPtr<"CurrentPlaylistInfo", FFastArraySerializer>();
 
 			StructGet(CurrentPlaylistInfo, "PlaylistPropertyArray", "BasePlaylist") = Playlist;
 			StructGet(CurrentPlaylistInfo, "PlaylistPropertyArray", "OverridePlaylist") = Playlist;
 			StructGet<uint32>(CurrentPlaylistInfo, "PlaylistPropertyArray", "PlaylistReplicationKey")++;
 			CurrentPlaylistInfo->MarkArrayDirty();
-			GameState->Call("OnRep_CurrentPlaylistInfo", nullptr);
+			GameState->Call<"OnRep_CurrentPlaylistInfo">();
 
-			GameState->Get<uint32>("CurrentPlaylistId") = Playlist->Get<uint32>("PlaylistId");
-			GameState->Call("OnRep_CurrentPlaylistId", nullptr);
+			GameState->Get<"CurrentPlaylistId", uint32>() = Playlist->Get<"PlaylistId", uint32>();
+			GameState->Call<"OnRep_CurrentPlaylistId">();
 
-			GM->Get<uint32>("CurrentPlaylistId") = Playlist->Get<uint32>("PlaylistId");
-			GM->Get<FName>("CurrentPlaylistName") = Playlist->Get<FName>("PlaylistName");
+			GameMode->Get<"CurrentPlaylistId", uint32>() = Playlist->Get<"PlaylistId", uint32>();
+			GameMode->Get<"CurrentPlaylistName", FName>() = Playlist->Get<"PlaylistName", FName>();
 
-			/*struct FAdditionalLevelStreamed
-			{
-			public:
-				class FName LevelName;
-				bool bIsServerOnly;
-				uint8 _Padding1[0x3];
-			};
+			// idfk why this works but it does
+			GameState->Call<"OnRep_CurrentPlaylistInfo">();
+			GameState->Call<"OnRep_CurrentPlaylistId">();
 
-			struct LevelStreamingDynamic_LoadLevelInstanceBySoftObjectPtr
-			{
-			public:
-				class UObject* WorldContextObject;
-				TSoftObjectPtr<UObject> Level;
-				struct FVector Location;
-				struct FRotator Rotation;
-				bool bOutSuccess;
-				uint8 _Padding1[0x7];
-				class FString OptionalLevelNameOverride;
-				class ULevelStreamingDynamic* ReturnValue;
-			};
-
-			auto AdditionalLevelsOff = Playlist->GetOffset("AdditionalLevels");
-			auto AdditionalLevelsServerOnlyOff = Playlist->GetOffset("AdditionalLevelsServerOnly");
-
-			if (AdditionalLevelsServerOnlyOff) {
-				auto& AdditionalLevels = GetFromOffset<TArray<TSoftObjectPtr<UObject>>>(Playlist, AdditionalLevelsServerOnlyOff);
-
-				for (auto& Level : AdditionalLevels) {
-					bool Success = false;
-					LevelStreamingDynamic_LoadLevelInstanceBySoftObjectPtr Params;
-					Params.WorldContextObject = World;
-					Params.Level = Level;
-					Params.bOutSuccess = &Success;
-					Params.Location = FVector{};
-					Params.Rotation = FRotator{};
-					Params.OptionalLevelNameOverride = L"";
-					GetDefaultObj<"LevelStreamingDynamic">()->Call("LoadLevelInstanceBySoftObjectPtr", &Params);
-					if (Success) GameState->Get<TArray<FAdditionalLevelStreamed>>("AdditionalPlaylistLevelsStreamed").Add({ Level.ObjectID.AssetPathName, true });
-				}
-			}
-			if (AdditionalLevelsOff) {
-				auto& AdditionalLevels = GetFromOffset<TArray<TSoftObjectPtr<UObject>>>(Playlist, AdditionalLevelsOff);
-
-				for (auto& Level : AdditionalLevels) {
-					bool Success = false;
-					LevelStreamingDynamic_LoadLevelInstanceBySoftObjectPtr Params;
-					Params.WorldContextObject = World;
-					Params.Level = Level;
-					Params.bOutSuccess = &Success;
-					Params.Location = FVector{};
-					Params.Rotation = FRotator{};
-					Params.OptionalLevelNameOverride = L"";
-					GetDefaultObj<"LevelStreamingDynamic">()->Call("LoadLevelInstanceBySoftObjectPtr", &Params);
-					if (Success && AdditionalLevelsServerOnlyOff) GameState->Get<TArray<FAdditionalLevelStreamed>>("AdditionalPlaylistLevelsStreamed").Add({ Level.ObjectID.AssetPathName, false });
-					else if (Success) GameState->Get<TArray<FName>>("AdditionalPlaylistLevelsStreamed").Add(Level.ObjectID.AssetPathName);
-				}
-			}*/
 		}
 		else if (FNVer > 4.0) {
-			GameState->Get("CurrentPlaylistData") = Playlist;
+			GameState->Get<"CurrentPlaylistData">() = Playlist;
 		}
 		else {
-			GameState->Get<uint32>("CurrentPlaylistId") = 0;
+			GameState->Get<"CurrentPlaylistId", uint32>() = 0;
 		}
 	}
 
@@ -100,24 +47,26 @@ bool ReadyToStartMatch(UObject* GM) {
 	WarmupStarts.Free();
 	if (WarmupCount == 0) return false;
 
+	if (FNVer >= 5.00 && !GameState->Get<"MapInfo">()) return false;
+
 	if (!bInit) {
 		bInit = true;
 
 		auto Beacon = SpawnActor(TUObjectArray::FindObject<UClass>("FortOnlineBeaconHost"), FVector{}, FRotator{});
-		Beacon->Get<uint32>("ListenPort") = FNVer < 13.00 ? 43578 - 1 : 43578; // the beacon really doesnt matter much other than getting a netdriver, so it can be on any random port
+		Beacon->Get<"ListenPort", uint32>() = FNVer < 13.00 ? 4444 - 1 : 4444;
 
 		((bool (*)(AActor*)) FindInitHost())(Beacon);
 		((void (*)(AActor*, bool)) FindPauseBeaconRequests())(Beacon, false);
 
-		auto NetDriver = Beacon->Get("NetDriver");
+		auto NetDriver = Beacon->Get<"NetDriver">();
 
-		World->Get("NetDriver") = NetDriver;
-		NetDriver->Get("World") = World;
-		NetDriver->Get<FName>("NetDriverName") = Conv_StringToName(L"GameNetDriver");
+		World->Get<"NetDriver">() = NetDriver;
+		NetDriver->Get<"World">() = World;
+		NetDriver->Get<"NetDriverName", FName>() = Conv_StringToName(L"GameNetDriver");
 		
-		GM->Get("GameSession")->Get<uint32>("MaxPlayers") = 100;
+		GameMode->Get<"GameSession">()->Get<"MaxPlayers", uint32>() = 100;
 
-		auto& LC = World->Get<TArray<UScriptStruct>>("LevelCollections");
+		auto& LC = World->Get<"LevelCollections", TArray<UScriptStruct>>();
 		auto LCStruct = TUObjectArray::FindObject<UClass>("LevelCollection");
 		auto C1 = LC.GetPtr(0, LCStruct->GetPropertiesSize());
 		auto C2 = LC.GetPtr(1, LCStruct->GetPropertiesSize());
@@ -131,13 +80,13 @@ bool ReadyToStartMatch(UObject* GM) {
 
 		((void (*)(UObject*, UObject*)) FindSetWorld())(NetDriver, World);
 		if (((bool (*)(UObject*, void*, FURL&, bool, FString&)) FindInitListen())(NetDriver, World, url, false, Err)) {
-			GameMode->Get<bool>("bWorldIsReady") = true;
+			GameMode->Get<"bWorldIsReady", bool>() = true;
 
 			Log("Listening on port 7777!");
 		}
 	}
 	
-	return ReadyToStartMatchOG(GM);
+	return FNVer >= 11.00 ? GameMode->Get<"AlivePlayers", uint32>() > 0 : ReadyToStartMatchOG(GM);
 }
 
 int NetMode() {
@@ -146,7 +95,7 @@ int NetMode() {
 
 void (*TickFlushOG)(UObject*);
 void TickFlush(UObject* NetDriver) {
-	auto ReplicationDriver = NetDriver->Get("ReplicationDriver");
+	auto ReplicationDriver = NetDriver->Get<"ReplicationDriver">();
 	if (ReplicationDriver) {
 		static int VTOff = 0;
 		if (!VTOff) {
@@ -203,13 +152,27 @@ void InitNullsAndRetTrues() {
 	if (FNVer >= 19.00) NullFuncs.push_back(Memcury::Scanner::FindPattern("48 89 5C 24 ? 55 56 57 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC 50 4C 8B FA 48 8B F1 E8").Get());
 	else if (FNVer >= 16.40) NullFuncs.push_back(Memcury::Scanner::FindPattern("48 89 5C 24 ? 48 89 74 24 ? 48 89 7C 24 ? 55 41 54 41 55 41 56 41 57 48 8B EC 48 83 EC 70 4C 8B FA 4C").Get());
 	else if (FNVer == 2.5) NullFuncs.push_back(Memcury::Scanner::FindPattern("40 55 56 41 56 48 8B EC 48 81 EC ? ? ? ? 48 8B 01 4C 8B F2").Get());
+	else {
+		auto sRef = Memcury::Scanner::FindStringRef(L"Changing GameSessionId from '%s' to '%s'");
+		NullFuncs.push_back(sRef.ScanFor({ 0x40, 0x55 }, false, 0, 1, 2000).Get());
+	}
 
-	auto sRef = Memcury::Scanner::FindStringRef(L"Changing GameSessionId from '%s' to '%s'");
-	NullFuncs.push_back(sRef.ScanFor({ 0x40, 0x55 }, false, 0, 1, 2000).Get());
+	if (FNVer == 0) RetTrueFuncs.push_back(Memcury::Scanner::FindPattern("48 89 5C 24 ? 48 89 6C 24 ? 57 41 56 41 57 48 81 EC ? ? ? ? 48 8B 01 49 8B E9 45 0F B6 F8").Get());
+	else if (FNVer >= 16.40) {
+		if (std::floor(FNVer) == 17) RetTrueFuncs.push_back(Memcury::Scanner::FindPattern("48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 4C 89 60 20 55 41 56 41 57 48 8B EC 48 83 EC 60 4D 8B F9 41 8A F0 4C 8B F2 48 8B F9 45 32 E4").Get());
+		RetTrueFuncs.push_back(Memcury::Scanner::FindPattern("48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 4C 89 60 20 55 41 56 41 57 48 8B EC 48 83 EC 60 49 8B D9 45 8A").Get());
+	}
 }
 
 float GetMaxTickRate() {
 	return 30.0f;
+}
+
+void* (*DispatchRequestOG)(void* unknown_1, void* MCPData, int MCPCode);
+void* DispatchRequest(void* unknown_1, void* MCPData, int MCPCode)
+{
+	if (FNVer < 7.40) *(int*)(__int64(MCPData) + (FNVer < 4.2 ? 0x60 : 0x28)) = 3;
+	return DispatchRequestOG(unknown_1, MCPData, 3);
 }
 
 void Main() {
@@ -224,14 +187,15 @@ void Main() {
 	Hook(FindWorldNetMode(), NetMode);
 	Hook(FindTickFlush(), TickFlush, TickFlushOG);
 	Hook(FindGetMaxTickRate(), GetMaxTickRate);
+	Hook(FindDispatchRequest(), DispatchRequest, DispatchRequestOG);
 	MH_EnableHook(MH_ALL_HOOKS);
 
 	InitNullsAndRetTrues();
 	ProcessNullsAndRetTrues();
 
 
-	//*(bool*)FindGIsClient() = false;
-	World->Get("OwningGameInstance")->Get<TArray<UObject*>>("LocalPlayers").Remove(0);
+	*(bool*)FindGIsClient() = false;
+	World->Get<"OwningGameInstance">()->Get<"LocalPlayers", TArray<UObject*>>().Remove(0);
 	
 	auto KSL = GetDefaultObj<"KismetSystemLibrary">();
 
@@ -262,7 +226,7 @@ void Main() {
 	} Params {
 		World, terrainOpen, nullptr
 	};
-	KSL->Call("ExecuteConsoleCommand", &Params);
+	KSL->Call<"ExecuteConsoleCommand">(&Params);
 }
 
 BOOL APIENTRY DllMain( HMODULE hModule,

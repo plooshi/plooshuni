@@ -10,12 +10,12 @@ private:
 	})();
 
 public:
-	template <typename _Dt>
+	template <typename _Dt = uint8>
 	static _Dt* Malloc(int32 Count, int32 Alignment = alignof(_Dt)) {
 		return (_Dt*)InternalRealloc(nullptr, Count * sizeof(_Dt), Alignment);
 	}
 
-	template <typename _Dt>
+	template <typename _Dt = uint8>
 	static _Dt* Realloc(_Dt* Ptr, int32 Count, int32 Alignment = alignof(_Dt)) {
 		return (_Dt*)InternalRealloc(Ptr, Count * sizeof(_Dt), Alignment);
 	}
@@ -262,6 +262,53 @@ _Ot* GetPtrFromOffset(const void* Obj, uint32 Offset) {
 	return (_Ot*)(__int64(Obj) + Offset);
 }
 
+
+template<int32 _Sl>
+struct DefaultObjChars
+{
+	char _Ch[_Sl + 9];
+
+	consteval DefaultObjChars(const char(&_St)[_Sl])
+	{
+		copy_n("Default__", 9, _Ch);
+		copy_n(_St, _Sl, _Ch + 9);
+	}
+
+	operator const char* () const
+	{
+		return static_cast<const char*>(_Ch);
+	}
+};
+template<int32 _Sl>
+struct ConstexprString
+{
+	char _Ch[_Sl];
+
+	consteval ConstexprString(const char(&_St)[_Sl])
+	{
+		copy_n(_St, _Sl, _Ch);
+	}
+
+	operator const char* () const
+	{
+		return static_cast<const char*>(_Ch);
+	}
+};
+
+class ParamPair {
+public:
+	std::string _Fi;
+	void* _Sc;
+
+	template <typename _Vt>
+	ParamPair(std::string _Nm, _Vt _Va) {
+		_Fi = _Nm;
+		// really scuffed way to make this work, just using & gives the same address for each param
+		_Sc = FMemory::Malloc(sizeof(_Vt));
+		memcpy(_Sc, &_Va, sizeof(_Vt));
+	}
+};
+
 class UObject {
 public:
 	void** Vft;
@@ -286,16 +333,16 @@ public:
 		return GetFromOffset<uint32>(Prop, OffsetOff);
 	}
 
-	template <typename T = UObject*>
-	T& Get(const char* Name) const {
-		auto Off = GetOffset(Name);
+	template <ConstexprString Name, typename T = UObject*>
+	T& Get() const {
+		static auto Off = GetOffset(Name);
 		if (Off == -1) throw out_of_range("Property not found!");
 		return GetFromOffset<T>(this, Off);
 	}
 
-	template <typename T = UObject*>
-	T* GetPtr(const char* Name) const {
-		auto Off = GetOffset(Name);
+	template <ConstexprString Name, typename T = UObject*>
+	T* GetPtr() const {
+		static auto Off = GetOffset(Name);
 		if (Off == -1) return nullptr;
 		return GetPtrFromOffset<T>(this, Off);
 	}
@@ -316,9 +363,14 @@ public:
 		ProcessEventInternal(this, Function, Params);
 	}
 
-	void Call(const char* Name, void* Params) const {
-		ProcessEvent(GetFunction(Name), Params);
+	template <ConstexprString Name>
+	void Call(void* Params = nullptr) const {
+		static auto Function = GetFunction(Name);
+		ProcessEvent(Function, Params);
 	}
+
+	template <ConstexprString Name>
+	void Call(std::vector<ParamPair> Params) const;
 };
 
 class UField : public UObject {
@@ -341,19 +393,19 @@ public:
 		static auto SuperOff = FNVer >= 7 ? 0x40 : 0x30;
 		return GetFromOffset<UStruct*>(this, SuperOff);
 	}
-};
-
-class UClass : public UStruct {
-public:
-	const UField* GetChildren(bool bNewFields = false) const {
-		auto ChildrenOff = bNewFields ? 0x50 : (FNVer >= 7 ? 0x48 : 0x38);
-		return GetFromOffset<UField*>(this, ChildrenOff);
-	}
 	const int32 GetPropertiesSize() const {
 		auto ChildrenOff = FNVer >= 12.10 ? 0x58 : (FNVer >= 7 ? 0x50 : 0x40);
 		return GetFromOffset<int32>(this, ChildrenOff);
 	}
 
+	const UField* GetChildren(bool bNewFields = false) const {
+		auto ChildrenOff = bNewFields ? 0x50 : (FNVer >= 7 ? 0x48 : 0x38);
+		return GetFromOffset<UField*>(this, ChildrenOff);
+	}
+};
+
+class UClass : public UStruct {
+public:
 	const UField* GetProperty(const char* Name) const {
 		for (const UClass* _Cl = this; _Cl; _Cl = (const UClass*)_Cl->GetSuper()) {
 			if (FNVer >= 12.10) {
@@ -374,11 +426,14 @@ const UField* UObject::GetProperty(const char* Name) const {
 	return Class->GetProperty(Name);
 }
 
-
 class UFunction : public UStruct {
 public:
 	void Call(const UObject* obj, void* Params) {
 		if (this) obj->ProcessEvent(this, Params);
+	}
+
+	void Call(const UObject* obj, std::vector<ParamPair> Params) {
+		if (this) obj->ProcessEvent(this, CreateParams(Params));
 	}
 
 	void operator()(const UObject* obj, void* Params) {
@@ -415,7 +470,77 @@ public:
 		}
 		return -1;
 	}
+
+	struct Param {
+		std::string Name;
+		uint32 Offset;
+	};
+	class Params {
+	public:
+		std::vector<Param> NameOffsetMap;
+		uint32 Size;
+	};
+
+	Params GetParams() {
+		Params p;
+		static auto OffsetOff = FNVer >= 12.10 && FNVer < 20 ? 0x4c : 0x44;
+
+		if (FNVer >= 12.10) {
+			for (const UField* _Pr = GetChildren(true); _Pr; _Pr = _Pr->GetNext(true)) {
+				p.NameOffsetMap.push_back({ _Pr->GetName(true).ToSDKString(), GetFromOffset<uint32>(_Pr, OffsetOff) });
+			}
+		}
+		for (const UField* _Pr = GetChildren(false); _Pr; _Pr = _Pr->GetNext(false)) {
+			p.NameOffsetMap.push_back({ _Pr->GetName(false).ToSDKString(), GetFromOffset<uint32>(_Pr, OffsetOff) });
+		}
+
+		p.Size = GetPropertiesSize();
+		return p;
+	}
+
+	void* CreateParams(std::vector<ParamPair> InputParams) {
+		auto Mem = FMemory::Malloc(GetParams().Size);
+		auto Params = GetParams();
+
+		for (auto& _Pa : InputParams) {
+			Param FoundParam;
+			int i = 0;
+			uint32 Size = 0;
+			for (auto& _Mp : Params.NameOffsetMap) {
+				if (_Mp.Name == _Pa._Fi) {
+					FoundParam = _Mp;
+					Size = i == Params.NameOffsetMap.size() - 1 ? Params.Size - _Mp.Offset : Params.NameOffsetMap[i + 1].Offset - _Mp.Offset;
+					break;
+				}
+				i++;
+			}
+
+			if (Size) {
+				memcpy((PBYTE)Mem + FoundParam.Offset, _Pa._Sc, Size);
+			}
+		}
+		return Mem;
+	}
+
+	template <typename _Rt>
+	_Rt* GetValueFromParams(void *Params, const char* Name) {
+		auto Params = GetParams();
+
+		for (auto& _Mp : Params.NameOffsetMap) {
+			if (_Mp.Name == Name) {
+				return GetPtrFromOffset<_Rt>(Params, _Mp.Offset);
+			}
+		}
+
+		return nullptr;
+	}
 };
+
+template <ConstexprString Name>
+void UObject::Call(std::vector<ParamPair> Params) const {
+	static auto Function = GetFunction(Name);
+	ProcessEvent(Function, Function->CreateParams(Params));
+}
 
 struct FUObjectItem final
 {
@@ -506,38 +631,20 @@ public:
 	})();
 public:
 	static const int32 Num() {
-		if (GObjectsChunked)
-			return GObjectsChunked->Num();
-		else if (GObjectsUnchunked)
-			return GObjectsUnchunked->Num();
-		else
-			return 0;
+		return GObjectsChunked ? GObjectsChunked->Num() : GObjectsUnchunked->Num();
 	}
 
 	static const int32 Max() {
-		if (GObjectsChunked)
-			return GObjectsChunked->Max();
-		else if (GObjectsUnchunked)
-			return GObjectsUnchunked->Max();
-		else
-			return 0;
+		return GObjectsChunked ? GObjectsChunked->Max() : GObjectsUnchunked->Max();
 	}
 
 	static const FUObjectItem* GetItemByIndex(const int32 Index) {
-		if (GObjectsChunked)
-			return GObjectsChunked->GetItemByIndex(Index);
-		else if (GObjectsUnchunked)
-			return GObjectsUnchunked->GetItemByIndex(Index);
-		else
-			return nullptr;
+		return GObjectsChunked ? GObjectsChunked->GetItemByIndex(Index) : GObjectsUnchunked->GetItemByIndex(Index);
 	}
 
 	static const UObject* GetObjectByIndex(const int32 Index) {
 		const FUObjectItem* Item = GetItemByIndex(Index);
-		if (Item)
-			return Item->Object;
-		else
-			return nullptr;
+		return Item ? Item->Object : nullptr;
 	}
 
 	static const UObject* FindObject(const char* Name) {
@@ -579,38 +686,6 @@ T& StructGet(_St *&StructInstance, const char* StructName, const char* Name) {
 	return GetFromOffset<T>(StructInstance, Off);
 }
 
-template<int32 _Sl>
-struct DefaultObjChars
-{
-	char _Ch[_Sl + 9];
-
-	consteval DefaultObjChars(const char(&_St)[_Sl])
-	{
-		copy_n("Default__", 9, _Ch);
-		copy_n(_St, _Sl, _Ch + 9);
-	}
-
-	operator const char *() const
-	{
-		return static_cast<const char*>(_Ch);
-	}
-};
-template<int32 _Sl>
-struct ConstexprString
-{
-	char _Ch[_Sl];
-
-	consteval ConstexprString(const char(&_St)[_Sl])
-	{
-		copy_n(_St, _Sl, _Ch);
-	}
-
-	operator const char* () const
-	{
-		return static_cast<const char*>(_Ch);
-	}
-};
-
 template <DefaultObjChars Name>
 const UObject* GetDefaultObj() {
 	static auto Obj = TUObjectArray::FindObject(Name);
@@ -640,8 +715,8 @@ public:
 };
 
 class EngineWrapper : public WrapperBase {
-private:
-	const UObject* Get() const override {
+public:
+	const UObject* Get() const {
 		return TUObjectArray::FindFirstObject("FortEngine");
 	}
 };
@@ -649,27 +724,27 @@ private:
 EngineWrapper Engine;
 
 class WorldWrapper : public WrapperBase {
-private:
-	const UObject* Get() const override {
-		return Engine->Get("GameViewport")->Get("World");
+public:
+	const UObject* Get() const {
+		return Engine->Get<"GameViewport">()->Get<"World">();
 	}
 };
 
 WorldWrapper World;
 
 class GameModeWrapper : public WrapperBase {
-private:
-	const UObject* Get() const override {
-		return World->Get("AuthorityGameMode");
+public:
+	const UObject* Get() const {
+		return World->Get<"AuthorityGameMode">();
 	}
 };
 
 GameModeWrapper GameMode;
 
 class GameStateWrapper : public WrapperBase {
-private:
-	const UObject* Get() const override {
-		return World->Get("GameState");
+public:
+	const UObject* Get() const {
+		return World->Get<"GameState">();
 	}
 };
 
@@ -848,7 +923,7 @@ public:
 
 static TArray<AActor*> GetAll(const UClass* Class) {
 	GameplayStatics_GetAllActorsOfClass Params{ World, Class };
-	GetDefaultObj<"GameplayStatics">()->Call("GetAllActorsOfClass", &Params);
+	GetDefaultObj<"GameplayStatics">()->Call<"GetAllActorsOfClass">(&Params);
 	return Params.OutActors;
 }
 
@@ -1059,12 +1134,12 @@ AActor* SpawnActor(const UClass* Class, FVector Loc, FRotator Rot = {}, AActor* 
 	Params.SpawnTransform = Transform;
 	Params.CollisionHandlingOverride = 2; // AdjustIfPossibleButAlwaysSpawn
 	Params.Owner = Owner;
-	Statics->Call("BeginDeferredActorSpawnFromClass", &Params);
+	Statics->Call<"BeginDeferredActorSpawnFromClass">(&Params);
 
 	GameplayStatics_FinishSpawningActor Params2;
 	Params2.Actor = Params.ReturnValue;
 	Params2.SpawnTransform = Transform;
-	Statics->Call("FinishSpawningActor", &Params2);
+	Statics->Call<"FinishSpawningActor">(&Params2);
 	return Params2.ReturnValue;
 }
 
@@ -1077,12 +1152,12 @@ AActor* SpawnActor(const UClass* Class, FTransform Transform, AActor* Owner = nu
 	Params.SpawnTransform = Transform;
 	Params.CollisionHandlingOverride = 2; // AdjustIfPossibleButAlwaysSpawn
 	Params.Owner = Owner;
-	Statics->Call("BeginDeferredActorSpawnFromClass", &Params);
+	Statics->Call<"BeginDeferredActorSpawnFromClass">(&Params);
 
 	GameplayStatics_FinishSpawningActor Params2;
 	Params2.Actor = Params.ReturnValue;
 	Params2.SpawnTransform = Transform;
-	Statics->Call("FinishSpawningActor", &Params2);
+	Statics->Call<"FinishSpawningActor">(&Params2);
 	return Params2.ReturnValue;
 }
 
@@ -1098,7 +1173,7 @@ T* SpawnActorUnfinished(const UClass* Class, FVector Loc, FRotator Rot = {}, AAc
 	Params.SpawnTransform = Transform;
 	Params.CollisionHandlingOverride = 2; // AdjustIfPossibleButAlwaysSpawn
 	Params.Owner = Owner;
-	Statics->Call("BeginDeferredActorSpawnFromClass", &Params);
+	Statics->Call<"BeginDeferredActorSpawnFromClass">(&Params);
 	return Params.ReturnValue;
 }
 
@@ -1111,7 +1186,7 @@ T* FinishSpawnActor(const AActor* Actor, FVector Loc, FRotator Rot)
 	GameplayStatics_FinishSpawningActor Params2;
 	Params2.Actor = Actor;
 	Params2.SpawnTransform = Transform;
-	Statics->Call("FinishSpawningActor", &Params2);
+	Statics->Call<"FinishSpawningActor">(&Params2);
 	return Params2.ReturnValue;
 }
 
@@ -1124,7 +1199,7 @@ public:
 
 FName Conv_StringToName(FString Str) {
 	KismetStringLibrary_Conv_StringToName Params{ Str };
-	GetDefaultObj<"KismetStringLibrary">()->Call("Conv_StringToName", &Params);
+	GetDefaultObj<"KismetStringLibrary">()->Call<"Conv_StringToName">(&Params);
 	return Params.ReturnValue;
 }
 
@@ -1209,13 +1284,8 @@ public:
 	class FString SubPathString;
 };
 
-
-class FSoftObjectPtr : public TPersistentObjectPtr<FSoftObjectPath>
-{
-};
-
 template<typename _Ut>
-class TSoftObjectPtr : public FSoftObjectPtr
+class TSoftObjectPtr : public TPersistentObjectPtr<FSoftObjectPath>
 {
 public:
 	_Ut* Get() const
@@ -1229,7 +1299,7 @@ public:
 };
 
 template<typename _Ut>
-class TSoftClassPtr : public FSoftObjectPtr
+class TSoftClassPtr : public TPersistentObjectPtr<FSoftObjectPath>
 {
 public:
 	_Ut* Get() const

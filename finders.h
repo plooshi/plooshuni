@@ -102,15 +102,25 @@ uint64 FindInitHost()
 }
 
 uint64 FindPauseBeaconRequests() {
-	if (FNVer < 13) return Memcury::Scanner::FindPattern("40 53 48 83 EC 30 48 8B ? 84 D2 74 ? 80 3D").Get();
+	if (FNVer >= 19.00) return Memcury::Scanner::FindPattern("48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 83 EC 20 33 ED 48 8B F1 84 D2 74 27 80 3D").Get();
 	else if (FNVer >= 16.40) return Memcury::Scanner::FindPattern("48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC 30 33 F6 48 8B F9 84 D2 74").Get();
-	else if (FNVer >= 19.00) return Memcury::Scanner::FindPattern("48 89 5C 24 ? 48 89 6C 24 ? 48 89 74 24 ? 57 48 83 EC 20 33 ED 48 8B F1 84 D2 74 27 80 3D").Get();
-	else {
+	else if (FNVer >= 13) {
 		auto Addr = Memcury::Scanner::FindPattern("40 57 48 83 EC 30 48 8B F9 84 D2 74 62 80 3D").Get();
 		if (!Addr) Addr = Memcury::Scanner::FindPattern("40 53 48 83 EC 30 48 8B ? 84 D2 74 ? 80 3D").Get();
 		return Addr;
 	}
-	return 0;
+	else if (FNVer >= 2.5 && FNVer <= 4.5) return Memcury::Scanner::FindPattern("40 53 48 83 EC 30 48 8B D9 84 D2 74 68 80 3D ? ? ? ? ? 72 2C 48 8B 05 ? ? ? ? 4C 8D 44").Get();
+	else if (FNVer == 6.30 || FNVer == 6.31) return Memcury::Scanner::FindPattern("40 53 48 83 EC 30 48 8B D9 84 D2 74 68 80 3D").Get();
+	else if (FNVer == 0) {
+		auto Addr = Memcury::Scanner::FindPattern("40 53 48 83 EC 30 48 8B D9 84 D2 74 6F 80 3D ? ? ? ? ? 72 33 48 8B 05").Get();
+		if (!Addr) Addr = Memcury::Scanner::FindPattern("40 53 48 83 EC 30 48 8B D9 84 D2 74 6F 80 3D", false).Get();
+		if (!Addr) Addr = Memcury::Scanner::FindPattern("40 53 48 83 EC 30 48 8B D9 84 D2 74 68 80 3D ? ? ? ? ? 72").Get();
+
+		return Addr;
+	}
+
+	auto Addr = Memcury::Scanner::FindStringRef(L"All Beacon Requests Resumed.");
+	return Addr.ScanFor({ 0x40, 0x53 }, false, 0, 1, 1000).Get();
 }
 
 uint64 FindInitListen()
@@ -149,16 +159,18 @@ void ProcessNullsAndRetTrues() {
 	for (auto& Func : NullFuncs) {
 		if (Func == 0x0) continue;
 		VirtualProtect((void*)Func, 1, PAGE_EXECUTE_READWRITE, &og);
-		*(uint8_t*)Func = 0xC3;
+		*(uint8*)Func = 0xC3;
 		VirtualProtect((void*)Func, 1, og, &og);
 	}
 
+	auto RetTruePoint = Memcury::Scanner::FindPattern("B8 01 00 00 00 C3").Get();
 	for (auto& Func : RetTrueFuncs) {
 		if (Func == 0x0) continue;
-		std::array<uint8_t, 7> shc = { 0x48, 0x31, 0xC0, 0x48, 0xFF, 0xC0, 0xC3 };
-		VirtualProtect((void*)Func, 7, PAGE_EXECUTE_READWRITE, &og);
-		__movsb((uint8_t*)Func, shc.data(), 7);
-		VirtualProtect((void*)Func, 7, og, &og);
+		VirtualProtect((void*)Func, 5, PAGE_EXECUTE_READWRITE, &og);
+		auto AddrForJmp = RetTruePoint - Func + 5;
+		*(uint8*)Func = 0xE9;
+		*(uint32*)(Func + 1) = uint32(AddrForJmp);
+		VirtualProtect((void*)Func, 5, og, &og);
 	}
 }
 
@@ -168,21 +180,43 @@ uint64 FindGetMaxTickRate()
 
 	if (FNVer >= 16.40) return Memcury::Scanner::FindPattern("40 53 48 83 EC 60 0F 29 74 24 ? 48 8B D9 0F 29 7C 24 ? 0F 28").Get();
 
-	auto Addrr = Memcury::Scanner::FindStringRef(L"Hitching by request!").Get();
+	auto sRef = Memcury::Scanner::FindStringRef(L"Hitching by request!").Get();
 
-	if (!Addrr)
+	if (!sRef)
 		return 0;
 
 	for (int i = 0; i < 400; i++)
 	{
-		if (*(uint8_t*)(uint8_t*)(Addrr - i) == 0x40 && *(uint8_t*)(uint8_t*)(Addrr - i + 1) == 0x53)
+		if (*(uint8_t*)(uint8_t*)(sRef - i) == 0x40 && *(uint8_t*)(uint8_t*)(sRef - i + 1) == 0x53)
 		{
-			return Addrr - i;
+			return sRef - i;
 		}
 
-		if (*(uint8_t*)(uint8_t*)(Addrr - i) == 0x48 && *(uint8_t*)(uint8_t*)(Addrr - i + 1) == 0x89 && *(uint8_t*)(uint8_t*)(Addrr - i + 2) == 0x5C)
+		if (*(uint8_t*)(uint8_t*)(sRef - i) == 0x48 && *(uint8_t*)(uint8_t*)(sRef - i + 1) == 0x89 && *(uint8_t*)(uint8_t*)(sRef - i + 2) == 0x5C)
 		{
-			return Addrr - i;
+			return sRef - i;
+		}
+	}
+
+	return 0;
+}
+
+uint64 FindDispatchRequest()
+{
+	auto sRef = Memcury::Scanner::FindStringRef(L"MCP-Profile: Dispatching request to %s", false, 0, FNVer >= 19).Get();
+
+	if (!sRef) return 0;
+
+	for (int i = 0; i < 1000; i++)
+	{
+		if (*(uint8_t*)(uint8_t*)(sRef - i) == 0x48 && *(uint8_t*)(uint8_t*)(sRef - i + 1) == 0x89 && *(uint8_t*)(uint8_t*)(sRef - i + 2) == 0x5C)
+		{
+			return sRef - i;
+		}
+
+		if (*(uint8_t*)(uint8_t*)(sRef - i) == 0x48 && *(uint8_t*)(uint8_t*)(sRef - i + 1) == 0x8B && *(uint8_t*)(uint8_t*)(sRef - i + 2) == 0xC4)
+		{
+			return sRef - i;
 		}
 	}
 
