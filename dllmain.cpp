@@ -63,6 +63,7 @@ bool ReadyToStartMatch(UObject* GM) {
 		UObject* NetDriver = nullptr;
 		auto CreateNetDriver = FindCreateNetDriver();
 		if (!CreateNetDriver) {
+			Log("Getting NetDriver using beacon");
 			auto Beacon = SpawnActor(TUObjectArray::FindObject<UClass>("FortOnlineBeaconHost"), FVector{}, FRotator{});
 			Beacon->Get<"ListenPort", uint32>() = FNVer < 13.00 ? 10484 - 1 : 10484;
 
@@ -72,6 +73,7 @@ bool ReadyToStartMatch(UObject* GM) {
 			NetDriver = Beacon->Get<"NetDriver">();
 		}
 		else {
+			Log("Getting NetDriver using CreateNetDriver");
 			NetDriver = ((UObject * (*)(UObject*, UObject*, FName)) CreateNetDriver)(Engine, World, Conv_StringToName(L"GameNetDriver"));
 		}
 
