@@ -222,3 +222,80 @@ uint64 FindDispatchRequest()
 
 	return 0;
 }
+
+uint64 FindCreateNetDriver() {
+	if (FNVer >= 16.40) {
+		//return Memcury::Scanner::FindPattern("48 8B D0 48 8B CE E8 ?? ?? ?? ?? 48 85 C0 75 ?? E8 ?? ?? ?? ?? 4C 8B C3 48 8B D0 48 8B CE E8 ?? ?? ?? ??").ScanFor({ 0x48, 0x89, 0x5C }, false).Get();
+		return 0;
+	}
+	auto Addr = Memcury::Scanner::FindPattern("49 8B D8 48 8B F9 E8 ?? ?? ?? ?? 48 8B D0 4C 8B C3 48 8B CF 48 8B 5C 24 ?? 48 83 C4 ?? 5F E9 ?? ?? ?? ??"); // from 12.41
+	if (!Addr.Get()) Addr = Memcury::Scanner::FindPattern("48 8B D9 E8 ?? ?? ?? ?? 4C 8B 44 24 ?? 48 8B D0 48 8B CB E8 ?? ?? ?? ?? 48 83 C4 ?? 5B C3", false); // from 4.1
+	if (!Addr.Get()) Addr = Memcury::Scanner::FindPattern("33 D2 E8 ?? ?? ?? ?? 48 8B D0 4C 8B C3 48 8B CF E8 ?? ?? ?? ?? 48 8B 5C 24 ?? 48 83 C4 ?? 5F C3", false); // from 7.40
+
+	auto RealAddr = Addr.Get();
+	for (int i = 0; i < 1000; i++)
+	{
+		if (*(uint8_t*)(uint8_t*)(RealAddr - i) == 0x48 && *(uint8_t*)(uint8_t*)(RealAddr - i + 1) == 0x89 && *(uint8_t*)(uint8_t*)(RealAddr - i + 2) == 0x5C)
+		{
+			return RealAddr - i;
+		}
+
+		if (*(uint8_t*)(uint8_t*)(RealAddr - i) == 0x4C && *(uint8_t*)(uint8_t*)(RealAddr - i + 1) == 0x89 && *(uint8_t*)(uint8_t*)(RealAddr - i + 2) == 0x44)
+		{
+			return RealAddr - i;
+		}
+	}
+
+	return 0;
+}
+
+
+uint64 FindGameSessionPatch()
+{
+	auto sRef = Memcury::Scanner::FindStringRef(L"Gamephase Step: %s", false).Get();
+
+	uint64 Beginning = 0;
+	uint8_t* ByteToPatch = 0;
+
+	if (!sRef)
+	{
+		Beginning = Memcury::Scanner::FindPattern("48 89 5C 24 ? 57 48 83 EC 20 E8 ? ? ? ? 48 8B D8 48 85 C0 0F 84 ? ? ? ? E8").Get(); // not actually the func but its fine
+
+		if (!Beginning) return 0;
+	} else
+	{
+		for (int i = 0; i < 3000; i++)
+		{
+			if (*(uint8_t*)(sRef - i) == 0x40 && *(uint8_t*)(sRef - i + 1) == 0x55)
+			{
+				Beginning = sRef - i;
+				break;
+			}
+
+			if (*(uint8_t*)(sRef - i) == 0x48 && *(uint8_t*)(sRef - i + 1) == 0x89 && *(uint8_t*)(sRef - i + 2) == 0x5C)
+			{
+				Beginning = sRef - i;
+				break;
+			}
+
+			if (*(uint8_t*)(sRef - i) == 0x48 && *(uint8_t*)(sRef - i + 1) == 0x8B && *(uint8_t*)(sRef - i + 2) == 0xC4)
+			{
+				Beginning = sRef - i;
+				break;
+			}
+		}
+	}
+
+	if (!Beginning) return 0;
+
+
+	for (int i = 0; i < 500; i++)
+	{
+		if (*(uint8_t*)(Beginning + i) == 0x0F && *(uint8_t*)(Beginning + i + 1) == 0x84)
+		{
+			return Beginning + i + 1;
+		}
+	}
+
+	return 0;
+}

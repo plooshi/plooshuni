@@ -336,8 +336,29 @@ public:
 	template <ConstexprString Name, typename T = UObject*>
 	T& Get() const {
 		static auto Off = GetOffset(Name);
-		if (Off == -1) throw out_of_range("Property not found!");
+		if (Off == -1) {
+			printf("Failed to get offset for %s!\n", Name._Ch);
+			while (true);
+		}
 		return GetFromOffset<T>(this, Off);
+	}
+
+	template <ConstexprString Name>
+	void SetBitfield(bool Value) const {
+		static auto OffsetOff = FNVer >= 12.10 && FNVer < 20 ? 0x4c : 0x44;
+		static auto Prop = GetProperty(Name);
+		uint8& Field = GetFromOffset<uint8>(Prop, OffsetOff);
+		if (Value) {
+			Field |= Prop->GetFieldMask();
+		}
+		else {
+			Field &= ~Prop->GetFieldMask();
+		}
+	}
+
+	template <ConstexprString Name>
+	bool Has() const {
+		return GetOffset(Name) != -1;
 	}
 
 	template <ConstexprString Name, typename T = UObject*>
@@ -384,6 +405,11 @@ public:
 	FName& GetName(bool bNewFields = false) const {
 		auto NameOff = bNewFields ? 0x28 : 0x18;
 		return GetFromOffset<FName>(this, NameOff);
+	}
+
+	const uint8 GetFieldMask() const {
+		static auto FieldMaskOff = FNVer >= 12.21 && FNVer < 20 ? 0x7b : 0x73;
+		return GetFromOffset<uint8>(this, FieldMaskOff);
 	}
 };
 

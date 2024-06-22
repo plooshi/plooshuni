@@ -8,11 +8,11 @@ bool ReadyToStartMatch(UObject* GM) {
 	static bool bSetPlaylist = false;
 	static bool bInit = false;
 
+	static auto Playlist = (UObject*)TUObjectArray::FindObject("Playlist_DefaultSolo");
+
 	if (!bSetPlaylist) {
 		bSetPlaylist = true;
-		GameMode->Get<"WarmupRequiredPlayerCount", uint32>() = 4;
-
-		auto Playlist = (UObject *) TUObjectArray::FindObject("Playlist_DefaultSolo");
+		GM->Get<"WarmupRequiredPlayerCount", uint32>() = 1;
 
 		if (FNVer >= 6.10) {
 			auto CurrentPlaylistInfo = GameState->GetPtr<"CurrentPlaylistInfo", FFastArraySerializer>();
@@ -26,16 +26,18 @@ bool ReadyToStartMatch(UObject* GM) {
 			GameState->Get<"CurrentPlaylistId", uint32>() = Playlist->Get<"PlaylistId", uint32>();
 			GameState->Call<"OnRep_CurrentPlaylistId">();
 
-			GameMode->Get<"CurrentPlaylistId", uint32>() = Playlist->Get<"PlaylistId", uint32>();
-			GameMode->Get<"CurrentPlaylistName", FName>() = Playlist->Get<"PlaylistName", FName>();
-
-			// idfk why this works but it does
-			GameState->Call<"OnRep_CurrentPlaylistInfo">();
-			GameState->Call<"OnRep_CurrentPlaylistId">();
-
+			GM->Get<"CurrentPlaylistId", uint32>() = Playlist->Get<"PlaylistId", uint32>();
+			GM->Get<"CurrentPlaylistName", FName>() = Playlist->Get<"PlaylistName", FName>();
 		}
 		else if (FNVer > 4.0) {
 			GameState->Get<"CurrentPlaylistData">() = Playlist;
+			GameState->Call<"OnRep_CurrentPlaylistData">();
+
+			GameState->Get<"CurrentPlaylistId", uint32>() = Playlist->Get<"PlaylistId", uint32>();
+			GameState->Call<"OnRep_CurrentPlaylistId">();
+
+			GM->Get<"CurrentPlaylistId", uint32>() = Playlist->Get<"PlaylistId", uint32>();
+			GM->Get<"CurrentPlaylistName", FName>() = Playlist->Get<"PlaylistName", FName>();
 		}
 		else {
 			GameState->Get<"CurrentPlaylistId", uint32>() = 0;
@@ -45,26 +47,39 @@ bool ReadyToStartMatch(UObject* GM) {
 	auto WarmupStarts = GetAll<"FortPlayerStartWarmup">();
 	auto WarmupCount = WarmupStarts.Num();
 	WarmupStarts.Free();
-	if (WarmupCount == 0) return false;
+	if (WarmupCount == 0) {
+		ReadyToStartMatchOG(GM);
+		return false;
+	}
 
-	if (FNVer >= 5.00 && !GameState->Get<"MapInfo">()) return false;
+	if (FNVer >= 5.00 && !GameState->Get<"MapInfo">()) {
+		ReadyToStartMatchOG(GM);
+		return false;
+	}
 
 	if (!bInit) {
 		bInit = true;
 
-		auto Beacon = SpawnActor(TUObjectArray::FindObject<UClass>("FortOnlineBeaconHost"), FVector{}, FRotator{});
-		Beacon->Get<"ListenPort", uint32>() = FNVer < 13.00 ? 4444 - 1 : 4444;
+		UObject* NetDriver = nullptr;
+		auto CreateNetDriver = FindCreateNetDriver();
+		if (!CreateNetDriver) {
+			auto Beacon = SpawnActor(TUObjectArray::FindObject<UClass>("FortOnlineBeaconHost"), FVector{}, FRotator{});
+			Beacon->Get<"ListenPort", uint32>() = FNVer < 13.00 ? 10484 - 1 : 10484;
 
-		((bool (*)(AActor*)) FindInitHost())(Beacon);
-		((void (*)(AActor*, bool)) FindPauseBeaconRequests())(Beacon, false);
+			((bool (*)(AActor*)) FindInitHost())(Beacon);
+			((void (*)(AActor*, bool)) FindPauseBeaconRequests())(Beacon, false);
 
-		auto NetDriver = Beacon->Get<"NetDriver">();
+			NetDriver = Beacon->Get<"NetDriver">();
+		}
+		else {
+			NetDriver = ((UObject * (*)(UObject*, UObject*, FName)) CreateNetDriver)(Engine, World, Conv_StringToName(L"GameNetDriver"));
+		}
 
-		World->Get<"NetDriver">() = NetDriver;
 		NetDriver->Get<"World">() = World;
 		NetDriver->Get<"NetDriverName", FName>() = Conv_StringToName(L"GameNetDriver");
+		World->Get<"NetDriver">() = NetDriver;
 		
-		GameMode->Get<"GameSession">()->Get<"MaxPlayers", uint32>() = 100;
+		GM->Get<"GameSession">()->Get<"MaxPlayers", uint32>() = Playlist && Playlist->Has<"MaxPlayers">() ? Playlist->Get<"MaxPlayers", uint32>() : 100;
 
 		auto& LC = World->Get<"LevelCollections", TArray<UScriptStruct>>();
 		auto LCStruct = TUObjectArray::FindObject<UClass>("LevelCollection");
@@ -73,6 +88,9 @@ bool ReadyToStartMatch(UObject* GM) {
 		StructGet(C1, "LevelCollection", "NetDriver") = NetDriver;
 		StructGet(C2, "LevelCollection", "NetDriver") = NetDriver;
 
+		if (GameState->Has<"AirCraftBehavior">() && Playlist && Playlist->Has<"AirCraftBehavior">()) GameState->Get<"AirCraftBehavior", uint8>() = Playlist->Get<"AirCraftBehavior", uint8>();
+		if (GameState->Has<"CachedSafeZoneStartUp">() && Playlist && Playlist->Has<"AirCraftBehavior">()) GameState->Get<"CachedSafeZoneStartUp", uint8>() = Playlist->Get<"SafeZoneStartUp", uint8>();
+
 		FURL url;
 		url.Port = 7777 - (FNVer >= 13.00 ? 1 : 0);
 		FString Err;
@@ -80,13 +98,14 @@ bool ReadyToStartMatch(UObject* GM) {
 
 		((void (*)(UObject*, UObject*)) FindSetWorld())(NetDriver, World);
 		if (((bool (*)(UObject*, void*, FURL&, bool, FString&)) FindInitListen())(NetDriver, World, url, false, Err)) {
-			GameMode->Get<"bWorldIsReady", bool>() = true;
+			GameMode->SetBitfield<"bWorldIsReady">(true);
 
 			Log("Listening on port 7777!");
 		}
 	}
 	
-	return FNVer >= 11.00 ? GameMode->Get<"AlivePlayers", uint32>() > 0 : ReadyToStartMatchOG(GM);
+	auto Ret = ReadyToStartMatchOG(GM);
+	return FNVer >= 11.00 ? GM->Get<"AlivePlayers", TArray<UObject *>>().Num() > 0 : Ret;
 }
 
 int NetMode() {
@@ -125,12 +144,13 @@ void InitNullsAndRetTrues() {
 	if (FNVer == 0) NullFuncs.push_back(Memcury::Scanner::FindPattern("48 89 54 24 ? 48 89 4C 24 ? 55 53 57 48 8D 6C 24 ? 48 81 EC ? ? ? ? 8B 41 08 C1 E8 05").Get());
 	else if (FNVer >= 3.3 && FNVer <= 4.5) NullFuncs.push_back(Memcury::Scanner::FindPattern("48 8B C4 57 48 81 EC ? ? ? ? 4C 8B 82 ? ? ? ? 48 8B F9 0F 29 70 E8 0F 29 78 D8").Get());
 	else if (FNVer == 4.1) NullFuncs.push_back(Memcury::Scanner::FindPattern("4C 8B DC 55 49 8D AB ? ? ? ? 48 81 EC ? ? ? ? 48 8B 05 ? ? ? ? 48 33 C4 48 89 85 ? ? ? ? 49 89 5B 10 48 8D 05 ? ? ? ? 48 8B 1D ? ? ? ? 49 89 73 18 33 F6 40").Get());
-	else if (FNVer >= 5.00) {
+	else if (FNVer >= 5.00 && FNVer < 7.00) {
 		NullFuncs.push_back(Memcury::Scanner::FindPattern("48 8B C4 48 89 58 08 48 89 70 10 57 48 81 EC ? ? ? ? 48 8B BA ? ? ? ? 48 8B DA 0F 29").Get());
 		NullFuncs.push_back(Memcury::Scanner::FindStringRef(L"Widget Class %s - Running Initialize On Archetype, %s.").ScanFor(FNVer < 6.3 ? std::vector<uint8_t>{ 0x40, 0x55 } : std::vector<uint8_t>{ 0x48, 0x89, 0x5C }, false).Get());
 	}
 	else if (FNVer >= 7.00 && FNVer <= 12.00) NullFuncs.push_back(Memcury::Scanner::FindPattern("48 89 5C 24 ? 57 48 83 EC 30 48 8B 41 28 48 8B DA 48 8B F9 48 85 C0 74 34 48 8B 4B 08 48 8D").Get());
 	else if (FNVer >= 12.21 && FNVer < 13.00) {
+		NullFuncs.push_back(Memcury::Scanner::FindStringRef(L"Widget Class %s - Running Initialize On Archetype, %s.").ScanFor(std::vector<uint8_t>{ 0x48, 0x89, 0x5C }, false).Get()); // for 12.41
 		NullFuncs.push_back(Memcury::Scanner::FindPattern(FNVer == 12.41 ? "40 57 41 56 48 81 EC ? ? ? ? 80 3D ? ? ? ? ? 0F B6 FA 44 8B F1 74 3A 80 3D ? ? ? ? ? 0F" : "40 57 41 56 48 81 EC ? ? ? ? 80 3D ? ? ? ? ? 0F B6 FA 44 8B F1 74 3A 80 3D ? ? ? ? ? 0F 82").Get());
 		if (FNVer == 12.41) NullFuncs.push_back(Memcury::Scanner::FindPattern("48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 54 41 56 41 57 48 83 EC 70 48 8B 35").Get());
 		else if (FNVer == 12.61) NullFuncs.push_back(Memcury::Scanner::FindPattern("48 89 5C 24 ? 55 57 41 54 41 56 41 57 48 8D 6C 24 ? 48 81 EC ? ? ? ? 48 8B 05 ? ? ? ? 48 33 C4 48 89 45 20 4C 8B A5").Get());
@@ -155,6 +175,10 @@ void InitNullsAndRetTrues() {
 	else {
 		auto sRef = Memcury::Scanner::FindStringRef(L"Changing GameSessionId from '%s' to '%s'");
 		NullFuncs.push_back(sRef.ScanFor({ 0x40, 0x55 }, false, 0, 1, 2000).Get());
+	}
+	if (FNVer < 16.40) {
+		auto Addr = Memcury::Scanner::FindStringRef(L"STAT_CollectGarbageInternal");
+		NullFuncs.push_back(Addr.ScanFor({ 0x48, 0x89, 0x5C }, false, 0, 1, 2000).Get());
 	}
 
 	if (FNVer == 0) RetTrueFuncs.push_back(Memcury::Scanner::FindPattern("48 89 5C 24 ? 48 89 6C 24 ? 57 41 56 41 57 48 81 EC ? ? ? ? 48 8B 01 49 8B E9 45 0F B6 F8").Get());
@@ -192,6 +216,14 @@ void Main() {
 
 	InitNullsAndRetTrues();
 	ProcessNullsAndRetTrues();
+
+	auto GSP = LPVOID(FindGameSessionPatch());
+	if (GSP) {
+		DWORD og;
+		VirtualProtect(GSP, 1, PAGE_EXECUTE_READWRITE, &og);
+		*(uint8*)GSP = 0x85;
+		VirtualProtect(GSP, 1, og, &og);
+	}
 
 
 	*(bool*)FindGIsClient() = false;
